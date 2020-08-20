@@ -69,13 +69,10 @@ class Tail {
   }
 
   queue() {
-    console.log(`queue called: ${this.ready}`)
     if(this.ready) {
       this.ready = false
       
       if(files[0].rename) {
-        console.log(`file renamed`)
-        console.log(files)
         findName(files[0].ino, path, file => {
           files[0].file = file
           this.read()
@@ -95,7 +92,6 @@ class Tail {
           return
         }
       } else {
-        console.log(`> file stat: ${stat}`)
         if(stat.size == files[0].size) {
           if(files.length > 1) {
             fs.close(this.fileDescriptor, error => {
@@ -118,7 +114,6 @@ class Tail {
             }
             
             let byteSize = stat.size - files[0].size
-            console.log(`> reading specifically: ${byteSize}`)
 
             let data = Buffer.alloc(byteSize)
             fs.read(this.fileDescriptor, data, 0, byteSize, files[0].size, (error, bytesRead, buffer) => {
