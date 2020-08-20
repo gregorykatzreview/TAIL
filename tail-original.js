@@ -1,129 +1,157 @@
-`use strict`
 const fs = require('fs')
-const fileName = 'application.log'
+let files = []
+let watcher = undefined
+let output = ''
+let path
 
-let links = []
-let index = 0
+exports.search = function(file) {
+  let temp = file.split('\\')
+  path = temp.slice(0, temp.length - 1).join('\\') || '.'
+
+  fs.stat(file, (error, stat) => {
+    if(error) {
+    if(error.code === 'ENOENT') {
+      console.log(`file does not exist`)
+      //TODO REJECT HERE
+    }
+    } else {
+    files.push({
+      ino: stat.ino,
+      size: stat.size,
+      file: file,
+      rename: false
+    })
+
+    let tail = new Tail()
+
+    let rename = false
+    watcher = fs.watch(file, event => {
+      if(event == 'rename') {
+      rename = true
+      } else {
+      if(rename) {
+        rename = false
+
+        files[files.length - 1].rename = true
+        
+        fs.stat(file, (error, stat) => {
+          files.push({
+            ino: stat.ino,
+            size: stat.size,
+            file: file,
+            rename: false
+          })
+        })
+      }
+      
+      tail.read()
+      }
+    })
+    
+    }
+  })
+
+}
 
 class Tail {
   constructor() {
-    this.running = true
     this.fileDescriptor = undefined
+    this.ready = false
     this.init()
   }
-  
+
   init() {
-    fs.open(links[0].name, 'r', (status, fileDescriptor) => {
+    fs.open(files[0].file, 'r', (status, fileDescriptor) => {
       this.fileDescriptor = fileDescriptor
-      this.run()
+      this.ready = true
+      this.queue()
     })
   }
-  
-  run() {
-    let size = fs.statSync(links[0].name).size
-    
-    if(links[0].size == size) {
-      if(links.length > 1) {
-        fs.close(this.fileDescriptor, error => {
-          if(error) {
-            console.log(`unable to close file ${links[0].name}`)
-          }
-          
-          fs.unlink(links[0].name, error => {
-            if(error) {
-              console.log(`unlink failure: ${error}`)
-            }
-            links.shift()
-            links[0].size = 0
-            
-            this.init()
-          })
-        })
-      } else {
-        this.running = false
-      }
-    } else {
-      if(this.fileDescriptor) {
-        if(size < links[0].size) {
-          links[0].size = 0
-        }
-        
-        let byteSize = size - links[0].size
-      
-        let data = Buffer.alloc(byteSize)
-        fs.read(this.fileDescriptor, data, 0, byteSize, links[0].size, (error, bytesRead, buffer) => {
-          process.stdout.write(data.toString('utf8'))
-          links[0].size = size
-          this.run()
-        })
-      } else {
-        this.init()
-      }
-    }
-  }
-  
+
   queue() {
-    if(!this.running) {
-      this.running = true
-      this.run()
+    console.log(`queue called: ${this.ready}`)
+    if(this.ready) {
+      this.ready = false
+      
+      if(files[0].rename) {
+        console.log(`file renamed`)
+        console.log(files)
+        findName(files[0].ino, path, file => {
+          files[0].file = file
+          this.read()
+        })
+      } else {
+        console.log(`same file, reading`)
+        this.read()
+      }
     }
   }
+  
+  read() {
+    fs.stat(files[0].file, (error, stat) => {
+      if(error) {
+        if(error.code === 'ENOENT') {
+          console.log(`file does not exist - while trying to read the file: ${files[0].file}`)
+          return
+        }
+      } else {
+        console.log(`> file stat: ${stat}`)
+        if(stat.size == files[0].size) {
+          if(files.length > 1) {
+            fs.close(this.fileDescriptor, error => {
+              if(error) {
+                console.log(`unable to close file ${files[0].file}`)
+              }
+              
+              files.shift()
+              files[0].size = 0
+              
+              this.init()
+            })
+          } else {
+            this.running = false
+          }
+        } else {
+          if(this.fileDescriptor) {
+            if(stat.size < files[0].size) {
+              files[0].size = 0
+            }
+            
+            let byteSize = stat.size - files[0].size
+            console.log(`> reading specifically: ${byteSize}`)
+
+            let data = Buffer.alloc(byteSize)
+            fs.read(this.fileDescriptor, data, 0, byteSize, files[0].size, (error, bytesRead, buffer) => {
+              process.stdout.write(data.toString('utf8'))
+
+              files[0].size = stat.size
+              
+              this.ready = true
+              this.queue()
+            })
+            
+          } else {
+            this.init()
+          }
+        }
+      }
+    })
+  }
+
 }
 
-clean().then( _ => {
-  if(fs.existsSync(fileName)) {
-    fs.link(fileName, `_tmp${index}`, error => {
-      let size = fs.statSync(`_tmp${index}`).size
-      links.push({name: `_tmp${index}`, size: size})
-      index++
-      
-      let tail = new Tail()
-      
-      let rename = false
-      fs.watch(fileName, eventType => {
-        if(eventType == 'rename') {
-          rename = true
-        } else {
-          if(rename) {
-            rename = false
-            fs.link(fileName, `_tmp${index}`, error => {
-              size = fs.statSync(`_tmp${index}`).size
-              links.push({name: `_tmp${index}`, size: size})
-              index++
-            })
-          }
-          tail.queue()
+function findName(ino, path, callback) {
+  fs.readdirSync(path).forEach(file => {
+    fs.stat(`${path}\\${file}`, (error, stat) => {
+      if(error) {
+        //error.code
+      } else {
+        if(stat.isFile()) {
+          if(stat.ino == ino) {
+            callback(`${path}\\${file}`)
+          } 
         }
-      })
-    })
-  } else {
-    console.log(`file ${fileName} doesn't exist`)
-  }
-})
-
-
-function clean() {
-  return new Promise(resolve => {
-    console.log(`123`)
-    let files = fs.readdirSync(`.`).filter(file => file.match(/^_tmp/))
-
-    let promises = []
-    files.forEach(file => {
-      promises.push(removeFile(file))
-    })
-    Promise.all(promises).then( _ => {
-      resolve()
+      }
     })
   })
-}
-
-function removeFile(file) {
-  return new Promise(resolve => {
-    fs.unlink(file, error => {
-      if(error) {
-        console.log(`error removing ${file}`)
-      }
-      resolve()
-    })
-  }) 
 }
